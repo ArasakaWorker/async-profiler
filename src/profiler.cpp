@@ -41,6 +41,7 @@
 #include "tsc.h"
 #include "vmStructs.h"
 
+#include <iostream>
 
 // The instance is not deleted on purpose, since profiler structures
 // can be still accessed concurrently during VM termination
@@ -319,6 +320,7 @@ int Profiler::getNativeTrace(void* ucontext, ASGCT_CallFrame* frames, EventType 
     if (event_type == PERF_SAMPLE) {
         native_frames = PerfEvents::walk(tid, ucontext, callchain, MAX_NATIVE_FRAMES, java_ctx);
     } else if (event_type == BPF_CLIENT_SAMPLE) {
+        std::cout << "[oneasyncprofiler] bpfclient walk" << std::endl;
         native_frames = BpfClient::walk(tid, ucontext, callchain, MAX_NATIVE_FRAMES, java_ctx);
     } else if (_cstack == CSTACK_VM) {
         return 0;
@@ -649,11 +651,14 @@ u64 Profiler::recordSample(void* ucontext, u64 counter, EventType event_type, Ev
     }
 
     if (_features.mixed) {
+        std::cout << "[oneasyncprofiler] walkVM mixed" << std::endl;
         num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, event_type);
     } else if (event_type <= MALLOC_SAMPLE) {
         if (_cstack == CSTACK_VM) {
+            std::cout << "[oneasyncprofiler] walkVM CSTACK_VM" << std::endl;
             num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, event_type);
         } else {
+            std::cout << "[oneasyncprofiler] walkVM traceasync" << std::endl;
             int java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx);
             if (java_frames > 0 && java_ctx.pc != NULL && VMStructs::hasMethodStructs()) {
                 NMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
@@ -676,6 +681,8 @@ u64 Profiler::recordSample(void* ucontext, u64 counter, EventType event_type, Ev
         int start_depth = event_type == INSTRUMENTED_METHOD ? 1 : event_type == METHOD_TRACE ? 2 : 0;
         num_frames += getJavaTraceJvmti(jvmti_frames + num_frames, frames + num_frames, start_depth, _max_stack_depth);
     }
+
+    std::cout << "[oneasyncprofiler] frames number = " << num_frames << std::endl;
 
     if (num_frames == 0) {
         num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");

@@ -9,7 +9,7 @@
 
 #define COMMA ,
 
-static const u32 INITIAL_CAPACITY = 65536;
+static const u32 CAPACITY = 131072;
 static const u32 CALL_TRACE_CHUNK = 8 * 1024 * 1024;
 static const u32 OVERFLOW_TRACE_ID = 0x7fffffff;
 
@@ -23,14 +23,14 @@ class LongHashTable {
     volatile u32 _size;
     u32 _padding2[15];
 
-    static size_t getSize(u32 capacity) {
-        size_t size = sizeof(LongHashTable) + (sizeof(u64) + sizeof(CallTraceSample)) * capacity;
+    static size_t getSize() {
+        size_t size = sizeof(LongHashTable) + (sizeof(u64) + sizeof(CallTraceSample)) * CAPACITY;
         return (size + OS::page_mask) & ~OS::page_mask;
     }
 
   public:
     static LongHashTable* allocate(LongHashTable* prev, u32 capacity) {
-        LongHashTable* table = (LongHashTable*)OS::safeAlloc(getSize(capacity));
+        LongHashTable* table = (LongHashTable*)OS::safeAlloc(getSize());
         if (table != NULL) {
             table->_prev = prev;
             table->_capacity = capacity;
@@ -41,12 +41,12 @@ class LongHashTable {
 
     LongHashTable* destroy() {
         LongHashTable* prev = _prev;
-        OS::safeFree(this, getSize(_capacity));
+        OS::safeFree(this, getSize());
         return prev;
     }
 
     size_t usedMemory() {
-        return getSize(_capacity);
+        return getSize();
     }
 
     LongHashTable* trim() {
@@ -74,11 +74,11 @@ class LongHashTable {
     }
 
     CallTraceSample* values() {
-        return (CallTraceSample*)(keys() + _capacity);
+        return (CallTraceSample*)(keys() + CAPACITY);
     }
 
     void clear() {
-        memset(keys(), 0, (sizeof(u64) + sizeof(CallTraceSample)) * _capacity);
+        memset(keys(), 0, (sizeof(u64) + sizeof(CallTraceSample)) * CAPACITY);
         _size = 0;
     }
 };
@@ -86,7 +86,7 @@ class LongHashTable {
 CallTrace CallTraceStorage::_overflow_trace = {1, {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"storage_overflow"}};
 
 CallTraceStorage::CallTraceStorage() : _allocator(CALL_TRACE_CHUNK) {
-    _current_table = LongHashTable::allocate(NULL, INITIAL_CAPACITY);
+    _current_table = LongHashTable::allocate(NULL, 1);
     _overflow = 0;
 }
 
@@ -105,11 +105,11 @@ void CallTraceStorage::clear() {
     _overflow = 0;
 }
 
-u32 CallTraceStorage::capacity() {
-    // As capacity of each subsequent table doubles,
-    // total capacity is a sum of geometric series: 64K + 128K + 256K...
-    return _current_table->capacity() * 2 - INITIAL_CAPACITY;
-}
+// u32 CallTraceStorage::capacity() {
+//     // As capacity of each subsequent table doubles,
+//     // total capacity is a sum of geometric series: 64K + 128K + 256K...
+//     return _current_table->capacity() * 2 - INITIAL_CAPACITY;
+// }
 
 size_t CallTraceStorage::usedMemory() {
     size_t bytes = _allocator.usedMemory();
@@ -140,13 +140,13 @@ void CallTraceStorage::collectTraces(std::map<u32, CallTrace*>& map) {
         CallTraceSample* values = table->values();
         u32 capacity = table->capacity();
 
-        for (u32 slot = 0; slot < capacity; slot++) {
-            if (keys[slot] != 0 && loadAcquire(values[slot].samples) != 0) {
-                // Reset samples to avoid duplication of call traces between JFR chunks
-                values[slot].samples = 0;
+        for (u32 slot = 0; slot < CAPACITY; slot++) {
+            if (keys[slot] != 0 && loadAcquire(values[slot].counter) != 0) {
                 CallTrace* trace = values[slot].acquireTrace();
                 if (trace != NULL) {
-                    map[capacity - (INITIAL_CAPACITY - 1) + slot] = trace;
+                    map[capacity + slot] = trace;
+                    // Reset to make sure each trace is dumped only once
+                    values[slot].setTrace(NULL);
                 }
             }
         }
@@ -161,9 +161,8 @@ void CallTraceStorage::collectSamples(std::vector<CallTraceSample*>& samples) {
     for (LongHashTable* table = _current_table; table != NULL; table = table->prev()) {
         u64* keys = table->keys();
         CallTraceSample* values = table->values();
-        u32 capacity = table->capacity();
 
-        for (u32 slot = 0; slot < capacity; slot++) {
+        for (u32 slot = 0; slot < CAPACITY; slot++) {
             if (keys[slot] != 0) {
                 samples.push_back(&values[slot]);
             }
@@ -175,9 +174,8 @@ void CallTraceStorage::collectSamples(std::map<u64, CallTraceSample>& map) {
     for (LongHashTable* table = _current_table; table != NULL; table = table->prev()) {
         u64* keys = table->keys();
         CallTraceSample* values = table->values();
-        u32 capacity = table->capacity();
 
-        for (u32 slot = 0; slot < capacity; slot++) {
+        for (u32 slot = 0; slot < CAPACITY; slot++) {
             if (keys[slot] != 0 && values[slot].acquireTrace() != NULL) {
                 map[keys[slot]] += values[slot];
             }
@@ -235,8 +233,7 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, u64 counter) 
 
     LongHashTable* table = _current_table;
     u64* keys = table->keys();
-    u32 capacity = table->capacity();
-    u32 slot = hash & (capacity - 1);
+    u32 slot = hash & (CAPACITY - 1);
     u32 step = 0;
 
     while (keys[slot] != hash) {
@@ -246,8 +243,8 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, u64 counter) 
             }
 
             // Increment the table size, and if the load factor exceeds 0.75, reserve a new table
-            if (table->incSize() == capacity * 3 / 4) {
-                LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2);
+            if (table->incSize() == CAPACITY * 3 / 4) {
+                LongHashTable* new_table = LongHashTable::allocate(table, table->capacity() + CAPACITY);
                 if (new_table != NULL) {
                     __sync_bool_compare_and_swap(&_current_table, table, new_table);
                 }
@@ -259,13 +256,13 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, u64 counter) 
             break;
         }
 
-        if (++step >= capacity) {
+        if (++step >= CAPACITY) {
             // Very unlikely case of a table overflow
             atomicInc(_overflow);
             return OVERFLOW_TRACE_ID;
         }
         // Improved version of linear probing
-        slot = (slot + step) & (capacity - 1);
+        slot = (slot + step) & (CAPACITY - 1);
     }
 
     if (counter != 0) {
@@ -274,15 +271,14 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, u64 counter) 
         atomicInc(s.counter, counter);
     }
 
-    return capacity - (INITIAL_CAPACITY - 1) + slot;
+    return table->capacity() + slot;
 }
 
 void CallTraceStorage::add(u32 call_trace_id, u64 samples, u64 counter) {
-    if (call_trace_id > capacity()) {  // this also covers call_trace_id == OVERFLOW_TRACE_ID
+    if (call_trace_id > OVERFLOW_TRACE_ID) {  // this also covers call_trace_id == OVERFLOW_TRACE_ID
         return;
     }
 
-    call_trace_id += (INITIAL_CAPACITY - 1);
     for (LongHashTable* table = _current_table; table != NULL; table = table->prev()) {
         if (call_trace_id >= table->capacity()) {
             CallTraceSample& s = table->values()[call_trace_id - table->capacity()];

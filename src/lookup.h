@@ -43,25 +43,26 @@ class Lookup {
     MethodMap _method_map;
     // Dictionary is thread-safe and can be safely shared, as opposed to Index
     Dictionary* _classes;
-    Index _packages;
-    Index _symbols;
+    Dictionary _packages;
+    Dictionary _symbols;
 
     Lookup() :
         _method_map(),
         _classes(Profiler::instance()->classMap()),
-        _packages(1),
-        _symbols(1),
+        _packages(),
+        _symbols(),
         _jni(VM::jni()) {
     }
 
     MethodInfo* resolveMethod(ASGCT_CallFrame& frame);
     u32 getPackage(const char* class_name);
+    u32 getSymbol(const char* name);
 
   private:
     JNIEnv* _jni;
 
     void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name);
-    bool fillJavaMethodInfo(MethodInfo* mi, jmethodID method);
+    void fillJavaMethodInfo(MethodInfo* mi, jmethodID method);
     void fillJavaClassInfo(MethodInfo* mi, u32 class_id);
 };
 

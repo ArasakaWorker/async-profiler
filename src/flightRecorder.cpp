@@ -247,6 +247,7 @@ class Recording {
     u64 _chunk_size;
     u64 _chunk_time;
 
+    int _tid;
     int _available_processors;
     int _recorded_lib_count;
 
@@ -278,6 +279,7 @@ class Recording {
         _chunk_size = args._chunk_size <= 0 ? MAX_JLONG : (args._chunk_size < 262144 ? 262144 : args._chunk_size);
         _chunk_time = args._chunk_time <= 0 ? MAX_JLONG : (args._chunk_time < 5 ? 5 : args._chunk_time) * 1000000ULL;
 
+        _tid = OS::threadId();
         _available_processors = OS::getCpuCount();
 
         writeHeader(_buf);
@@ -299,9 +301,9 @@ class Recording {
         }
         flush(_buf);
 
-        if (args.hasOption(IN_MEMORY) && (_memfd = OS::createMemoryFile("async-profiler-recording")) >= 0) {
-            _in_memory = true;
-        }
+        // if (args.hasOption(IN_MEMORY) && (_memfd = OS::createMemoryFile("async-profiler-recording")) >= 0) {
+        //     _in_memory = true;
+        // }
 
         _cpu_monitor_enabled = !args.hasOption(NO_CPU_LOAD);
         if (_cpu_monitor_enabled) {
@@ -309,12 +311,12 @@ class Recording {
             _last_times.total.real = OS::getTotalCpuTime(&_last_times.total.user, &_last_times.total.system);
         }
 
-        _heap_monitor_enabled = !args.hasOption(NO_HEAP_SUMMARY) && VM::_totalMemory != NULL && VM::_freeMemory != NULL;
+        _heap_monitor_enabled = false;
         _last_gc_id = 0;
 
-        if (args._proc > 0) {
-            _process_sampler.enable(args._proc * 1000000);
-        }
+        // if (args._proc > 0) {
+        //     _process_sampler.enable(args._proc * 1000000);
+        // }
     }
 
     ~Recording() {
@@ -638,7 +640,6 @@ class Recording {
     }
 
     void writeSettings(Buffer* buf, Arguments& args) {
-        assert(args._cstack < sizeof(SETTING_CSTACK) / sizeof(char*));
         writeStringSetting(buf, T_ACTIVE_RECORDING, "version", PROFILER_VERSION);
         writeStringSetting(buf, T_ACTIVE_RECORDING, "engine", Profiler::instance()->_engine->type());
         writeStringSetting(buf, T_ACTIVE_RECORDING, "cstack", SETTING_CSTACK[args._cstack]);
@@ -696,7 +697,6 @@ class Recording {
     }
 
     void writeStringSetting(Buffer* buf, int category, const char* key, const char* value) {
-        flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH);
         int start = buf->skip(5);
         buf->put8(T_ACTIVE_SETTING);
         buf->putVar64(_start_ticks);
@@ -704,6 +704,7 @@ class Recording {
         buf->putUtf8(key);
         buf->putUtf8(value);
         buf->putVar32(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void writeBoolSetting(Buffer* buf, int category, const char* key, bool value) {
@@ -782,7 +783,7 @@ class Recording {
         jvmtiEnv* jvmti = VM::jvmti();
         jint count;
         char** keys;
-        if (!VM::loaded() || jvmti->GetSystemProperties(&count, &keys) != 0) {
+        if (jvmti->GetSystemProperties(&count, &keys) != 0) {
             return;
         }
 
@@ -799,7 +800,6 @@ class Recording {
                 buf->putVar32(start, buf->offset() - start);
                 jvmti->Deallocate((unsigned char*)value);
             }
-            jvmti->Deallocate((unsigned char*)key);
         }
 
         jvmti->Deallocate((unsigned char*)keys);
@@ -836,17 +836,15 @@ class Recording {
 
         if (delta == 0) {
             // First cpool
-            buf->putVar32(11);
+            buf->putVar32(9);
             writeFrameTypes(buf);
             writeThreadStates(buf);
             writeLogLevels(buf);
         } else {
-            buf->putVar32(8);
+            buf->putVar32(6);
         }
 
-        writeGCWhen(buf);
         writeThreads(buf);
-        writeUserEventTypes(buf);
         writeStackTraces(buf);
         writeMethods(buf);
         writeClasses(buf);
@@ -896,6 +894,7 @@ class Recording {
     }
 
     void writeThreads(Buffer* buf) {
+        addThread(_tid);
         std::vector<int> threads;
         _thread_set.collect(threads);
         _thread_set.clear();
@@ -906,7 +905,8 @@ class Recording {
         std::map<int, jlong>& thread_ids = profiler->_thread_ids;
         char name_buf[32];
 
-        writePoolHeader(buf, T_THREAD, threads.size());
+        buf->putVar32(T_THREAD);
+        buf->putVar32(threads.size());
         for (int i = 0; i < threads.size(); i++) {
             const char* thread_name;
             jlong thread_id;
@@ -915,12 +915,11 @@ class Recording {
                 thread_name = it->second.c_str();
                 thread_id = thread_ids[threads[i]];
             } else {
-                snprintf(name_buf, sizeof(name_buf), "[tid=%d]", threads[i]);
+                sprintf(name_buf, "[tid=%d]", threads[i]);
                 thread_name = name_buf;
                 thread_id = 0;
             }
 
-            flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - 2 * MAX_STRING_LENGTH);
             buf->putVar32(threads[i]);
             buf->putUtf8(thread_name);
             buf->putVar32(threads[i]);
@@ -930,6 +929,7 @@ class Recording {
                 buf->putUtf8(thread_name);
             }
             buf->putVar64(thread_id);
+            flushIfNeeded(buf);
         }
     }
 
@@ -937,7 +937,8 @@ class Recording {
         std::map<u32, CallTrace*> traces;
         Profiler::instance()->_call_trace_storage.collectTraces(traces);
 
-        writePoolHeader(buf, T_STACK_TRACE, traces.size());
+        buf->putVar32(T_STACK_TRACE);
+        buf->putVar32(traces.size());
         for (std::map<u32, CallTrace*>::const_iterator it = traces.begin(); it != traces.end(); ++it) {
             CallTrace* trace = it->second;
             buf->putVar32(it->first);
@@ -946,7 +947,7 @@ class Recording {
             for (int i = 0; i < trace->num_frames; i++) {
                 MethodInfo* mi = _lookup.resolveMethod(trace->frames[i]);
                 buf->putVar32(mi->_key);
-                if (mi->_type == FRAME_INTERPRETED) {
+                if (mi->_type < FRAME_NATIVE) {
                     jint bci = trace->frames[i].bci;
                     FrameTypeId type = FrameType::decode(bci);
                     bci = (bci & 0x10000) ? 0 : (bci & 0xffff);
@@ -993,33 +994,43 @@ class Recording {
         std::map<u32, const char*> classes;
         _lookup._classes->collect(classes);
 
-        writePoolHeader(buf, T_CLASS, classes.size());
+        buf->putVar32(T_CLASS);
+        buf->putVar32(classes.size());
         for (std::map<u32, const char*>::const_iterator it = classes.begin(); it != classes.end(); ++it) {
+            const char* name = it->second;
             buf->putVar32(it->first);
             buf->putVar32(0);  // classLoader
-            buf->putVar64(_lookup._symbols.indexOf(it->second));
-            buf->putVar32(_lookup.getPackage(it->second));
+            buf->putVar32(_lookup.getSymbol(name));
+            buf->putVar32(_lookup.getPackage(name));
             buf->putVar32(0);  // access flags
             flushIfNeeded(buf);
         }
     }
 
     void writePackages(Buffer* buf) {
-        writePoolHeader(buf, T_PACKAGE, _lookup._packages.size());
-        _lookup._packages.forEachOrdered([&] (size_t idx, const std::string& s) {
-            buf->putVar64(idx);
-            buf->putVar64(_lookup._symbols.indexOf(s));
+        std::map<u32, const char*> packages;
+        _lookup._packages.collect(packages);
+
+        buf->putVar32(T_PACKAGE);
+        buf->putVar32(packages.size());
+        for (std::map<u32, const char*>::const_iterator it = packages.begin(); it != packages.end(); ++it) {
+            buf->putVar32(it->first);
+            buf->putVar32(_lookup.getSymbol(it->second));
             flushIfNeeded(buf);
-        });
+        }
     }
 
     void writeSymbols(Buffer* buf) {
-        writePoolHeader(buf, T_SYMBOL, _lookup._symbols.size());
-        _lookup._symbols.forEachOrdered([&] (size_t idx, const std::string& s) {
-            flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH);
-            buf->putVar64(idx);
-            buf->putUtf8(s.c_str());
-        });
+        std::map<u32, const char*> symbols;
+        _lookup._symbols.collect(symbols);
+
+        buf->putVar32(T_SYMBOL);
+        buf->putVar32(symbols.size());
+        for (std::map<u32, const char*>::const_iterator it = symbols.begin(); it != symbols.end(); ++it) {
+            buf->putVar32(it->first);
+            buf->putUtf8(it->second);
+            flushIfNeeded(buf);
+        }
     }
 
     void writeLogLevels(Buffer* buf) {
@@ -1046,7 +1057,7 @@ class Recording {
     void recordExecutionSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event) {
         int start = buf->skip(1);
         buf->put8(T_EXECUTION_SAMPLE);
-        buf->putVar64(event->_start_time);
+        buf->putVar64(TSC::ticks());
         buf->putVar32(tid);
         buf->putVar32(call_trace_id);
         buf->putVar32(event->_thread_state);
@@ -1330,8 +1341,8 @@ bool FlightRecorder::timerTick(u64 wall_time, u32 gc_id) {
     }
 
     _rec->cpuMonitorCycle();
-    _rec->heapMonitorCycle(gc_id);
-    _rec->processMonitorCycle(wall_time);
+    // _rec->heapMonitorCycle(gc_id);
+    // _rec->processMonitorCycle(wall_time);
 
     bool need_switch_chunk = _rec->needSwitchChunk(wall_time);
 

@@ -51,25 +51,13 @@ MethodInfo* Lookup::resolveMethod(ASGCT_CallFrame& frame) {
         mi->_key = _method_map.size();
         if (method == NULL) {
             fillNativeMethodInfo(mi, "unknown", NULL);
-        } else if (frame.bci > BCI_NATIVE_FRAME) {
-            if (!fillJavaMethodInfo(mi, method)) {
-                fillNativeMethodInfo(mi, "stale_jmethodID", NULL);
-            }
+        } else if (frame.bci == BCI_ERROR) {
+            fillNativeMethodInfo(mi, (const char*)method, NULL);
         } else if (frame.bci == BCI_NATIVE_FRAME) {
             const char* name = (const char*)method;
             fillNativeMethodInfo(mi, name, Profiler::instance()->getLibraryName(name));
-        } else if (frame.bci == BCI_ADDRESS) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%p", method);
-            fillNativeMethodInfo(mi, buf, NULL);
-        } else if (frame.bci == BCI_ERROR) {
-            fillNativeMethodInfo(mi, (const char*)method, NULL);
-        } else if (frame.bci == BCI_CPU) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "CPU-%d", ((int)(uintptr_t)method) & 0x7fff);
-            fillNativeMethodInfo(mi, buf, NULL);
         } else {
-            fillJavaClassInfo(mi, (uintptr_t)method);
+            fillJavaMethodInfo(mi, method);
         }
     }
 
@@ -90,7 +78,11 @@ u32 Lookup::getPackage(const char* class_name) {
     if (class_name[0] == '[') {
         class_name = strchr(class_name, 'L') + 1;
     }
-    return _packages.indexOf(class_name, package - class_name);
+    return _packages.lookup(class_name, package - class_name);
+}
+
+u32 Lookup::getSymbol(const char* name) {
+    return _symbols.lookup(name);
 }
 
 void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name) {
@@ -103,12 +95,14 @@ void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* 
     }
 
     mi->_modifiers = 0x100;
+    mi->_line_number_table_size = 0;
+    mi->_line_number_table = NULL;
 
     if (Demangle::needsDemangling(name)) {
         char* demangled = Demangle::demangle(name, false);
         if (demangled != NULL) {
-            mi->_name = _symbols.indexOf(demangled);
-            mi->_sig = _symbols.indexOf("()L;");
+            mi->_name = _symbols.lookup(demangled);
+            mi->_sig = _symbols.lookup("()L;");
             mi->_type = FRAME_CPP;
             free(demangled);
             return;
@@ -117,48 +111,39 @@ void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* 
 
     size_t len = strlen(name);
     if (len >= 4 && strcmp(name + len - 4, "_[k]") == 0) {
-        mi->_name = _symbols.indexOf(name, len - 4);
-        mi->_sig = _symbols.indexOf("(Lk;)L;");
+        mi->_name = _symbols.lookup(name, len - 4);
+        mi->_sig = _symbols.lookup("(Lk;)L;");
         mi->_type = FRAME_KERNEL;
     } else {
-        mi->_name = _symbols.indexOf(name);
-        mi->_sig = _symbols.indexOf("()L;");
+        mi->_name = _symbols.lookup(name);
+        mi->_sig = _symbols.lookup("()L;");
         mi->_type = FRAME_NATIVE;
     }
 }
 
-bool Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method) {
-    if (VMMethod::isStaleMethodId(method)) {
-        return false;
-    }
+void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method) {
+    jvmtiEnv* jvmti = VM::jvmti();
 
-    jclass method_class = NULL;
+    jclass method_class;
     char* class_name = NULL;
     char* method_name = NULL;
     char* method_sig = NULL;
 
-    jvmtiEnv* jvmti = VM::jvmti();
-    jvmtiError err;
-
-    if ((err = jvmti->GetMethodName(method, &method_name, &method_sig, NULL)) == 0 &&
-        (err = jvmti->GetMethodDeclaringClass(method, &method_class)) == 0 && 
-        (err = jvmti->GetClassSignature(method_class, &class_name, NULL)) == 0) {
-        mi->_sig = _symbols.indexOf(method_sig);
-        mi->_name = _symbols.indexOf(method_name);
+    if (jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
+        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
         mi->_class = _classes->lookup(class_name + 1, strlen(class_name) - 2);
+        mi->_name = _symbols.lookup(method_name);
+        mi->_sig = _symbols.lookup(method_sig);
     } else {
-        mi->_sig = _symbols.indexOf("()L;");
-        mi->_name = _symbols.indexOf("jvmtiError");
         mi->_class = _classes->lookup("");
+        mi->_name = _symbols.lookup("jvmtiError");
+        mi->_sig = _symbols.lookup("()L;");
     }
 
     jvmti->Deallocate((unsigned char*)method_sig);
     jvmti->Deallocate((unsigned char*)method_name);
     jvmti->Deallocate((unsigned char*)class_name);
-
-    if (err != 0) {
-        return false;
-    }
 
     if (jvmti->GetMethodModifiers(method, &mi->_modifiers) != 0) {
         mi->_modifiers = 0;
@@ -170,12 +155,11 @@ bool Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method) {
     }
 
     mi->_type = FRAME_INTERPRETED;
-    return true;
 }
 
 void Lookup::fillJavaClassInfo(MethodInfo* mi, u32 class_id) {
     mi->_class = class_id;
-    mi->_name = _symbols.indexOf("");
-    mi->_sig = _symbols.indexOf("()L;");
+    mi->_name = _symbols.lookup("");
+    mi->_sig = _symbols.lookup("()L;");
     mi->_type = FRAME_INLINED;
 }
