@@ -51,15 +51,17 @@ class CallTraceStorage {
 
     u64 calcHash(int num_frames, ASGCT_CallFrame* frames);
     CallTrace* storeCallTrace(int num_frames, ASGCT_CallFrame* frames);
-    CallTrace* findCallTrace(LongHashTable* table, u64 hash);
 
   public:
     CallTraceStorage();
     ~CallTraceStorage();
 
     void clear();
-    u32 capacity();
+    // u32 capacity();
     size_t usedMemory();
+    Chunk* trimAllocator();
+    LongHashTable* trimTable();
+    void freeMemory(Chunk* chunk, LongHashTable* table);
 
     void collectTraces(std::map<u32, CallTrace*>& map);
     void collectSamples(std::vector<CallTraceSample*>& samples);
