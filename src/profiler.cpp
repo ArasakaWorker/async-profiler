@@ -1349,7 +1349,9 @@ Error Profiler::stop(bool restart) {
     _jfr.stop();
     unlockAll();
 
-    FdTransferClient::closePeer();
+    if (!restart) {
+        FdTransferClient::closePeer();
+    }
     _state = IDLE;
     return Error::OK;
 }
@@ -2071,6 +2073,7 @@ Error Profiler::restart(Arguments& args) {
     }
 
     if (args._loop) {
+        args._fdtransfer = false; // keep the previous connection
         args._file_num++;
         return start(args, true);
     }
