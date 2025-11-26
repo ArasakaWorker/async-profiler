@@ -108,6 +108,8 @@ const void** VMStructs::_call_stub_return_addr = NULL;
 const void* VMStructs::_call_stub_return = NULL;
 const void* VMStructs::_interpreted_frame_valid_start = NULL;
 const void* VMStructs::_interpreted_frame_valid_end = NULL;
+const void* VMStructs::_call_helper_start = NULL;
+const void* VMStructs::_call_helper_end = NULL;
 
 jfieldID VMStructs::_eetop;
 jfieldID VMStructs::_tid;
@@ -563,6 +565,14 @@ void VMStructs::resolveOffsets() {
 }
 
 void VMStructs::initJvmFunctions() {
+    if (!VM::isOpenJ9() && !VM::isZing()) {
+        CodeBlob* call_helper = _libjvm->findBlobByPrefix("_ZN9JavaCalls11call_helper");
+        if (call_helper != NULL) {
+            _call_helper_start = call_helper->_start;
+            _call_helper_end = call_helper->_end;
+        }
+    }
+
     if (VM::hotspot_version() == 8) {
         _lock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor28lock_without_safepoint_checkEv");
         _unlock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor6unlockEv");

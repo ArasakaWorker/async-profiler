@@ -390,7 +390,7 @@ Error Arguments::parse(const char* args) {
                     _timeout = 0xff0000ff;  // rotate at 00:00
                 }
                 if (_chunk_time == 0) {
-                    _chunk_time = 300;  // 5 min
+                    _chunk_time = 100;  // 5 min
                 }
 
             // Filters

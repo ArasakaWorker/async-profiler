@@ -114,6 +114,8 @@ class VMStructs {
     static const void* _call_stub_return;
     static const void* _interpreted_frame_valid_start;
     static const void* _interpreted_frame_valid_end;
+    static const void* _call_helper_start;
+    static const void* _call_helper_end;
 
     static jfieldID _eetop;
     static jfieldID _tid;
@@ -608,6 +610,13 @@ class CollectedHeap : VMStructs {
 
     uintptr_t size() {
         return (*(uintptr_t*) at(_region_size_offset)) * sizeof(uintptr_t);
+    }
+};
+
+class CallHelper : VMStructs {
+  public:
+    static bool contains(const void* pc) {
+        return pc >= _call_helper_start && pc < _call_helper_end;
     }
 };
 
