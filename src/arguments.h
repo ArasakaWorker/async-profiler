@@ -175,6 +175,7 @@ class Arguments {
     const char* _event;
     std::vector<const char*> _trace;
     int _timeout;
+    int _daysplit;
     long _interval;
     long _alloc;
     long _nativemem;
@@ -236,6 +237,7 @@ class Arguments {
         _event(NULL),
         _trace(),
         _timeout(0),
+        _daysplit(0),
         _interval(0),
         _alloc(-1),
         _nativemem(-1),

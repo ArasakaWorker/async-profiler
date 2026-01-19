@@ -73,6 +73,7 @@ const size_t EXTRA_BUF_SIZE = 512;
 //     chunksize=N             - approximate size of JFR chunk in bytes (default: 100 MB)
 //     chunktime=N             - duration of JFR chunk in seconds (default: 1 hour)
 //     timeout=TIME            - automatically stop profiler at TIME (absolute or relative)
+//     daysplit=N              - if timeout is a timestamp with hours, divides day interval into splits (default: 1)
 //     loop=TIME               - run profiler in a loop (continuous profiling)
 //     interval=N              - sampling interval in ns (default: 10'000'000, i.e. 10 ms)
 //     jstackdepth=N           - maximum Java stack depth (default: 2048)
@@ -234,6 +235,11 @@ Error Arguments::parse(const char* args) {
                     _event = value;
                 }
 
+            CASE("daysplit")
+                if (value == NULL || (_daysplit = parseTimeout(value)) == -1) {
+                    msg = "Invalid day split num";
+                }
+
             CASE("timeout")
                 if (value == NULL || (_timeout = parseTimeout(value)) == -1) {
                     msg = "Invalid timeout";
@@ -387,7 +393,8 @@ Error Arguments::parse(const char* args) {
                 }
                 if (_timeout == 0) {
                     _loop = true;
-                    _timeout = 0xff0000ff;  // rotate at 00:00
+                    _daysplit = 3;
+                    _timeout = 0xff0000ff;  // rotate at 00:00, 08:00, 16:00
                 }
                 if (_chunk_time == 0) {
                     _chunk_time = 300;  // 5 min

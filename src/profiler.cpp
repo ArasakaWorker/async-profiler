@@ -1294,7 +1294,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     _epoch++;
 
     if (args._timeout != 0 || args._output == OUTPUT_JFR) {
-        _stop_time = addTimeout(_start_time, args._timeout);
+        _stop_time = addTimeout(_start_time, args._timeout, args._daysplit);
         startTimer();
     }
 
@@ -1836,13 +1836,14 @@ void Profiler::dumpOtlp(Writer& out, Arguments& args) {
     out.write((const char*) otlp_buffer.data(), otlp_buffer.offset());
 }
 
-u64 Profiler::addTimeout(u64 start_micros, int timeout) {
+u64 Profiler::addTimeout(u64 start_micros, int timeout, int split_factor) {
     if (timeout == 0) {
         return 0x7fffffffffffffffULL;
     } else if (timeout > 0) {
         return start_micros + (u64)timeout * 1000000ULL;
     }
 
+    // Use timeout as a timestamp
     time_t start_seconds = start_micros / 1000000ULL;
     struct tm t;
     localtime_r(&start_seconds, &t);
@@ -1860,9 +1861,25 @@ u64 Profiler::addTimeout(u64 start_micros, int timeout) {
         t.tm_sec = ss;
     }
 
+    if (split_factor <= 0) {
+        split_factor = 1;
+    }
+
+    time_t day_interval = 86400 / split_factor;
     time_t result = mktime(&t);
-    if (result <= start_seconds) {
-        result += (hh < 24 ? 86400 : (mm < 60 ? 3600 : 60));
+    if (result < start_seconds) {
+        time_t diff = start_seconds - result;
+        time_t num_intervals = diff / day_interval + (diff % day_interval != 0);
+        result += (hh < 24 ? day_interval * num_intervals : (mm < 60 ? 3600 : 60));
+    } else if (result > start_seconds) {
+        // in case timestamp is further than day_interval from start_seconds
+        time_t diff = result - start_seconds;
+        time_t num_intervals = diff / day_interval;
+        result -= (hh < 24 ? day_interval * num_intervals : 0);
+    }
+    if (result == start_seconds) {
+        // add one interval
+        result += (hh < 24 ? day_interval : (mm < 60 ? 3600 : 60));
     }
     return (u64)result * 1000000ULL;
 }
