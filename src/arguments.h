@@ -228,6 +228,7 @@ class Arguments {
     double _minwidth;
     bool _reverse;
     bool _inverted;
+    bool _cloud;
 
     Arguments() :
         _buf(NULL),
@@ -288,7 +289,8 @@ class Arguments {
         _title(NULL),
         _minwidth(0),
         _reverse(false),
-        _inverted(false) {
+        _inverted(false),
+        _cloud(false) {
     }
 
     ~Arguments();
